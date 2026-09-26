@@ -1,0 +1,35 @@
+Security notes - xdg-native-messaging-proxy revision
+====================================================
+
+This revision replaces the previous `flatpak-spawn --host` frontend with a
+small GIO D-Bus client that calls org.freedesktop.NativeMessagingProxy.Start().
+The upstream interface returns three Unix file descriptors (stdin, stdout,
+stderr), which the shim relays byte-for-byte.
+
+The shim is shipped both as auditable C source and as an x86-64 PIE binary.
+It uses only libc plus the stable GLib/GObject/GIO shared-library ABI expected
+in modern Flatpak runtimes. It contains no networking, shell invocation,
+process spawning, file writes, updater, or general-purpose command execution.
+
+Native caller validation:
+  Chromium: exact origin chrome-extension://lmeddoobegbaiopohmpmmobpnpjifpii/
+  Mozilla:  exact add-on ID {086f665e-6a55-4107-9147-f9a14e72b137}
+
+The host-side Node process repeats caller validation using the argv generated
+by xdg-native-messaging-proxy before it parses any extension message.
+
+The real host accepts only the specific Open-in extension Linux exec request
+shape, validates each URL as HTTP(S), and maps source browser to a fixed target
+Flatpak. It does not execute the extension-supplied executable string.
+
+The installer deliberately does not modify Flatpak overrides. The only required
+additional D-Bus permission is org.freedesktop.NativeMessagingProxy=talk.
+org.freedesktop.Flatpak=talk is not required and should not be granted for this
+bridge.
+
+Residual risk: org.freedesktop.NativeMessagingProxy permission applies to the
+browser sandbox as a whole and the proxy can discover other native messaging
+hosts installed on the host. This package does not globally restrict
+XNMP_HOST_LOCATIONS because doing so could break unrelated Native Messaging
+integrations. The security of any other host exposed through the proxy remains
+that host's responsibility.
