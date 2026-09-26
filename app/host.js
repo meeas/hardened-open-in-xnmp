@@ -8,6 +8,9 @@ function failure(code, error) {
   return {code, stdout: '', stderr: error, error};
 }
 
+/** Return an unchanged absolute HTTP(S) URL or throw; no raw ASCII whitespace,
+ * control characters, other schemes or command-line flags are accepted.
+ */
 function validateUrl(value) {
   if (typeof value !== 'string') {
     throw new Error('All arguments must be URL strings');
@@ -15,8 +18,8 @@ function validateUrl(value) {
   if (value.length === 0 || value.length > config.security.maxUrlLength) {
     throw new Error('URL length is outside the permitted range');
   }
-  if (/[\0\r\n]/.test(value)) {
-    throw new Error('URL contains prohibited control characters');
+  if (/[\x00-\x20\x7f]/.test(value) || !/^https?:\/\//i.test(value)) {
+    throw new Error('URL must start with http:// or https:// and contain no whitespace/control characters');
   }
 
   let parsed;
@@ -33,43 +36,43 @@ function validateUrl(value) {
   return value;
 }
 
-function determineNativeSource(argv) {
-  // xdg-native-messaging-proxy mirrors browser-native argv semantics:
-  // Chromium: <host> <chrome-extension://origin/>
-  // Mozilla:  <host> <manifest-path> <extension-id>
-  if (argv.length === 1 && argv[0] === config.sources.chrome.origin) {
-    return 'chrome';
+/** Resolve native argv to a registry identity; never infer a physical source browser.
+ * Chromium forks use identical origin arguments. The returned ID grants only the
+ * extension's fixed destination capability. Unexpected arguments throw.
+ */
+function determineNativeExtension(argv) {
+  let identity;
+  let mozilla = false;
+  if (argv.length === 1) identity = argv[0];
+  else if (argv.length === 2 && typeof argv[0] === 'string' &&
+    path.isAbsolute(argv[0]) && path.basename(argv[0]) === `${config.name}.json`) {
+    identity = argv[1];
+    mozilla = true;
   }
-
-  if (
-    argv.length === 2 &&
-    typeof argv[0] === 'string' &&
-    path.isAbsolute(argv[0]) &&
-    path.basename(argv[0]) === `${config.name}.json` &&
-    argv[1] === config.sources.firefox.extensionId
-  ) {
-    return 'firefox';
-  }
-
-  throw new Error('Refusing unexpected native-messaging caller identity');
+  const extension = config.extensions.find(e =>
+    (e.store === 'firefox') === mozilla && config.identity(e) === identity);
+  if (!extension) throw new Error('Refusing unexpected native-messaging caller identity');
+  return extension.id;
 }
 
-function validateRequest(sourceName, msg) {
-  const source = config.sources[sourceName];
-  if (!source) {
-    throw new Error('Invalid native-host source');
-  }
+/** Validate an upstream Linux exec request for an allowlisted extension ID.
+ * Returns trusted targetFlatpak plus URL arguments; throws before any execution.
+ */
+function validateRequest(extensionId, msg) {
+  const extension = config.extensions.find(e => e.id === extensionId);
+  if (!extension) throw new Error('Invalid native-host extension');
+  const target = config.browsers[extension.target];
   if (!msg || typeof msg !== 'object' || Array.isArray(msg)) {
     throw new Error('Native message must be a JSON object');
   }
 
-  // Upstream Open in Firefox / Open in Chrome use cmd=exec on Linux.
+  // Supported upstream Open-in extensions use cmd=exec on Linux.
   if (msg.cmd !== 'exec') {
     throw new Error(`Unsupported native command: ${String(msg.cmd)}`);
   }
 
   // Verify the genuine extension's default Linux command, but never execute it.
-  if (msg.command !== source.expectedCommand) {
+  if (msg.command !== target.command) {
     throw new Error(`Unexpected target command: ${String(msg.command)}`);
   }
 
@@ -93,14 +96,12 @@ function validateRequest(sourceName, msg) {
 
   const urls = args.map(validateUrl);
 
-  // Explicitly reject capability-bearing fields from the generic upstream bridge.
-  for (const key of ['env', 'stdin', 'kill', 'unref', 'script', 'permissions', 'uuid', 'data']) {
-    if (Object.prototype.hasOwnProperty.call(msg, key)) {
-      throw new Error(`Native field "${key}" is not permitted`);
-    }
+  const fields = new Set(['cmd', 'command', 'arguments', 'properties']);
+  for (const key of Object.keys(msg)) {
+    if (!fields.has(key)) throw new Error(`Native field "${key}" is not permitted`);
   }
 
-  return {targetFlatpak: source.targetFlatpak, urls};
+  return {targetFlatpak: target.appId, urls};
 }
 
 function sanitizedLaunchEnv() {
@@ -119,8 +120,11 @@ function sanitizedLaunchEnv() {
   return env;
 }
 
-function launch(targetFlatpak, urls, push, done) {
-  const child = spawn('/usr/bin/flatpak', ['run', targetFlatpak, ...urls], {
+/** Acknowledge Flatpak process creation once; later exits are not observed.
+ * Detachment lets the destination survive closure of the native-messaging port.
+ */
+function launch(targetFlatpak, urls, push, done, spawnProcess) {
+  const child = spawnProcess('/usr/bin/flatpak', ['run', targetFlatpak, ...urls], {
     detached: true,
     stdio: 'ignore',
     shell: false,
@@ -144,11 +148,12 @@ function launch(targetFlatpak, urls, push, done) {
   });
 }
 
-function observeForSource(sourceName) {
+/** Build a request handler. spawnProcess is injectable for browser-free tests. */
+function observeForExtension(extensionId, spawnProcess = spawn) {
   return (msg, push, done) => {
     try {
-      const request = validateRequest(sourceName, msg);
-      launch(request.targetFlatpak, request.urls, push, done);
+      const request = validateRequest(extensionId, msg);
+      launch(request.targetFlatpak, request.urls, push, done, spawnProcess);
     }
     catch (err) {
       push(failure(126, err.message));
@@ -158,9 +163,9 @@ function observeForSource(sourceName) {
 }
 
 function main() {
-  let sourceName;
+  let extensionId;
   try {
-    sourceName = determineNativeSource(process.argv.slice(2));
+    extensionId = determineNativeExtension(process.argv.slice(2));
   }
   catch (err) {
     process.stderr.write(`com.add0n.node: ${err.message}\n`);
@@ -168,13 +173,22 @@ function main() {
   }
 
   const {Input, Transform, Output} = require('./messaging');
-  process.stdin
-    .pipe(new Input({maxMessageBytes: config.security.maxMessageBytes}))
-    .pipe(new Transform(observeForSource(sourceName)))
-    .pipe(new Output())
-    .pipe(process.stdout);
+  require('stream').pipeline(
+    process.stdin,
+    new Input({maxMessageBytes: config.security.maxMessageBytes}),
+    new Transform(observeForExtension(extensionId)),
+    new Output(),
+    process.stdout,
+    err => {
+      if (err) {
+        // JSON parse errors may contain URL data; do not echo their text.
+        process.stderr.write('com.add0n.node: native messaging stream failed\n');
+        process.exitCode = 1;
+      }
+    }
+  );
 }
 
 if (require.main === module) main();
 
-module.exports = {determineNativeSource, validateRequest, validateUrl, observeForSource};
+module.exports = {determineNativeExtension, validateRequest, validateUrl, observeForExtension};

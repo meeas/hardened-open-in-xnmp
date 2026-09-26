@@ -2,18 +2,20 @@ Rebuilding native-messaging-proxy-shim
 ======================================
 
 The archive includes a prebuilt x86-64 PIE binary because a compiler/development
-SDK is not expected inside Chrome or Firefox Flatpaks. The complete C source is:
+SDK is not expected inside browser Flatpaks. The complete C source is:
 
   app/native-messaging-proxy-shim.c
 
 On a conventional Fedora development environment (or a Fedora toolbox) with a C
-compiler and GLib development files, a normal rebuild is:
+compiler and GLib/GIO runtime libraries, from the repository root:
+
+  node scripts/generate-shim-allowlist.js
 
   cc -O2 -Wall -Wextra -Werror -fPIE -pie \
     -Wl,-z,relro,-z,now \
     -o app/native-messaging-proxy-shim \
     app/native-messaging-proxy-shim.c \
-    -lgio-2.0 -lgobject-2.0 -lglib-2.0
+    -l:libgio-2.0.so.0 -l:libgobject-2.0.so.0 -l:libglib-2.0.so.0
 
   strip --strip-unneeded app/native-messaging-proxy-shim
 
@@ -22,6 +24,10 @@ function declarations so it does not depend on GLib headers for compilation.
 The resulting executable must dynamically provide libgio-2.0.so.0,
 libgobject-2.0.so.0, libglib-2.0.so.0 and libc at runtime.
 
+The generated app/shim-allowlist.h is derived from app/config.js. Any change to
+extension identities requires regenerating this header AND rebuilding the binary.
+Versioned library names above allow linking without development symlinks/headers.
+
 Recommended verification:
 
   file app/native-messaging-proxy-shim
@@ -29,6 +35,12 @@ Recommended verification:
   readelf -lW app/native-messaging-proxy-shim | grep -E 'GNU_STACK|GNU_RELRO'
   readelf -d app/native-messaging-proxy-shim | grep -E 'BIND_NOW|FLAGS_1'
   ./app/native-messaging-proxy-shim --self-test
+  node scripts/generate-shim-allowlist.js --check
+  node --test tests/*.test.js
+
+--self-test is only a loader smoke check. The Node regression suite checks actual
+compiled caller acceptance/rejection without connecting to a real D-Bus session.
+See RELEASE_CHECKLIST.md for artifact and browser integration checks.
 
 The prebuilt binary in this archive requires x86-64 Linux and GLIBC_2.34 or
 newer. The installer rejects other CPU architectures rather than attempting to

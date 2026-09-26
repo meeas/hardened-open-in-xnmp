@@ -43,7 +43,11 @@ Input.prototype._transform = function(chunk, encoding, done) {
       this.buf = this.buf.subarray(this.len);
       this.len = null;
 
-      const obj = JSON.parse(message.toString('utf8'));
+      const obj = JSON.parse(new TextDecoder('utf-8', {fatal: true}).decode(message));
+      // null is a stream EOF sentinel, so reject it before push().
+      if (!obj || typeof obj !== 'object' || Array.isArray(obj)) {
+        throw new Error('Native message must be a JSON object');
+      }
       this.push(obj);
     }
 
@@ -52,6 +56,11 @@ Input.prototype._transform = function(chunk, encoding, done) {
   catch (err) {
     done(err);
   }
+};
+
+/** Reject EOF mid-frame instead of silently discarding a partial request. */
+Input.prototype._flush = function(done) {
+  done(this.len !== null || this.buf.length ? new Error('Incomplete native message') : null);
 };
 
 function Output() {

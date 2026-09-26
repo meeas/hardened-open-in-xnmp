@@ -4,53 +4,7 @@ const fs = require('fs');
 const path = require('path');
 const {spawnSync} = require('child_process');
 const config = require('./config');
-
-if (process.platform !== 'linux') {
-  console.error('This hardened package supports Linux only.');
-  process.exit(1);
-}
-if (process.arch !== 'x64') {
-  console.error(`The included proxy shim is x86-64; this machine is ${process.arch}.`);
-  console.error('Rebuild app/native-messaging-proxy-shim.c for this architecture before installing.');
-  process.exit(1);
-}
-
-const home = process.env.HOME;
-if (!home || !path.isAbsolute(home)) {
-  console.error('HOME must be an absolute path.');
-  process.exit(1);
-}
-
-let share = process.argv
-  .filter(arg => arg.startsWith('--custom-dir='))
-  .map(arg => arg.slice('--custom-dir='.length))[0] || path.join(home, '.config');
-if (share.startsWith('~/')) share = path.join(home, share.slice(2));
-share = path.resolve(share);
-
-const unknownArgs = process.argv.slice(2).filter(arg => !arg.startsWith('--custom-dir='));
-if (unknownArgs.length) {
-  console.error(`Unknown argument(s): ${unknownArgs.join(' ')}`);
-  process.exit(2);
-}
-
-const appDir = path.join(share, config.name);
-const runPath = path.join(appDir, 'run.sh');
-const shimSource = path.join(__dirname, 'native-messaging-proxy-shim');
-
-const browsers = Object.freeze({
-  chrome: {
-    appId: 'com.google.Chrome',
-    sandboxManifestDir: path.join(home, '.var/app/com.google.Chrome/config/google-chrome/NativeMessagingHosts'),
-    hostManifestDir: path.join(home, '.config/google-chrome/NativeMessagingHosts'),
-    manifestType: 'chrome'
-  },
-  firefox: {
-    appId: 'org.mozilla.firefox',
-    sandboxManifestDir: path.join(home, '.var/app/org.mozilla.firefox/.mozilla/native-messaging-hosts'),
-    hostManifestDir: path.join(home, '.mozilla/native-messaging-hosts'),
-    manifestType: 'firefox'
-  }
-});
+const {options, layout, manifest} = require('./installation');
 
 function shellQuote(value) {
   return `'${String(value).replace(/'/g, `'"'"'`)}'`;
@@ -59,30 +13,28 @@ function shellQuote(value) {
 function secureDir(dir) {
   fs.mkdirSync(dir, {recursive: true, mode: 0o700});
   const st = fs.lstatSync(dir);
-  if (!st.isDirectory() || st.isSymbolicLink()) {
-    throw new Error(`Refusing non-directory or symlink path: ${dir}`);
-  }
+  if (!st.isDirectory() || st.isSymbolicLink()) throw new Error(`Refusing non-directory or symlink path: ${dir}`);
   fs.chmodSync(dir, 0o700);
 }
 
+/** Replace one file atomically; refuse a symlink at the containing directory.
+ * This is not a transaction across the installation, nor an ancestor-symlink defense.
+ */
 function atomicWrite(filename, data, mode) {
   const dir = path.dirname(filename);
   secureDir(dir);
   const tmp = path.join(dir, `.${path.basename(filename)}.${process.pid}.${Date.now()}.tmp`);
   const fd = fs.openSync(tmp, 'wx', mode);
   try {
-    fs.writeFileSync(fd, data);
-    fs.fsyncSync(fd);
+    try {
+      fs.writeFileSync(fd, data);
+      fs.fsyncSync(fd);
+    }
+    finally { fs.closeSync(fd); }
+    fs.chmodSync(tmp, mode);
+    fs.renameSync(tmp, filename);
   }
-  finally {
-    fs.closeSync(fd);
-  }
-  fs.chmodSync(tmp, mode);
-  fs.renameSync(tmp, filename);
-}
-
-function copyAtomic(source, destination, mode) {
-  atomicWrite(destination, fs.readFileSync(source), mode);
+  finally { fs.rmSync(tmp, {force: true}); }
 }
 
 function flatpak(args) {
@@ -96,138 +48,83 @@ function installedFlatpaks() {
   return new Set(result.stdout.split('\n').map(s => s.trim()).filter(Boolean));
 }
 
-function permissionText(appId) {
-  const result = flatpak(['info', '--show-permissions', appId]);
-  return result.status === 0 ? result.stdout : '';
-}
-
 function hasTalkPermission(appId, busName) {
-  const text = permissionText(appId);
-  const escaped = busName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-  return new RegExp(`^${escaped}=talk$`, 'm').test(text);
+  const result = flatpak(['info', '--show-permissions', appId]);
+  return result.status === 0 && result.stdout.split('\n').includes(`${busName}=talk`);
 }
 
-function hasBroadFlatpakPermission(appId) {
-  return hasTalkPermission(appId, 'org.freedesktop.Flatpak');
-}
-
-function proxyInstalled() {
-  const files = [
-    '/usr/share/dbus-1/services/org.freedesktop.NativeMessagingProxy.service',
-    '/usr/local/share/dbus-1/services/org.freedesktop.NativeMessagingProxy.service'
-  ];
-  return files.some(filename => fs.existsSync(filename));
-}
-
-function createApplication() {
-  secureDir(appDir);
-  copyAtomic(path.join(__dirname, 'host.js'), path.join(appDir, 'host.js'), 0o600);
-  copyAtomic(path.join(__dirname, 'messaging.js'), path.join(appDir, 'messaging.js'), 0o600);
-  copyAtomic(path.join(__dirname, 'config.js'), path.join(appDir, 'config.js'), 0o600);
-
-  const node = process.execPath;
-  // Preserve the native-messaging argv supplied by xdg-native-messaging-proxy.
-  const run = `#!/bin/sh\nset -eu\nexec ${shellQuote(node)} "$(dirname -- "$0")/host.js" "$@"\n`;
-  atomicWrite(runPath, run, 0o700);
-}
-
-function makeManifest(sourceName, executablePath) {
-  const source = config.sources[sourceName];
-  const browser = browsers[sourceName];
-  const manifest = {
-    name: config.name,
-    description: config.description,
-    path: executablePath,
-    type: 'stdio'
-  };
-  if (browser.manifestType === 'chrome') {
-    manifest.allowed_origins = [source.origin];
+/** Install frontends for detected browsers and broker manifests for their modes.
+ * No Flatpak permissions or extensions are installed. installed is an app-ID Set;
+ * it is injectable so installation can be tested in a temporary home directory.
+ * Returns the installed browser names and paths. Throws if no supported app exists.
+ */
+function install(settings, installed) {
+  const selected = Object.keys(config.browsers).filter(name => installed.has(config.browsers[name].appId));
+  if (!selected.length) throw new Error('No supported browser Flatpaks are installed');
+  const paths = layout(settings);
+  const shim = fs.readFileSync(path.join(__dirname, 'native-messaging-proxy-shim'));
+  secureDir(paths.appDir);
+  for (const name of ['host.js', 'messaging.js', 'config.js']) {
+    atomicWrite(path.join(paths.appDir, name), fs.readFileSync(path.join(__dirname, name)), 0o600);
   }
-  else {
-    manifest.allowed_extensions = [source.extensionId];
+  const run = `#!/bin/sh\nset -eu\nexec ${shellQuote(process.execPath)} "$(dirname -- "$0")/host.js" "$@"\n`;
+  atomicWrite(paths.runPath, run, 0o700);
+
+  const byMode = {chromium: [], mozilla: []};
+  for (const name of selected) {
+    const browser = config.browsers[name];
+    const extensions = config.extensionsForBrowser(name);
+    byMode[browser.mode].push(...extensions);
+    const dir = paths.frontends[name];
+    const shimPath = path.join(dir, `${config.name}-proxy-shim`);
+    atomicWrite(shimPath, shim, 0o700);
+    atomicWrite(path.join(dir, `${config.name}.json`),
+      JSON.stringify(manifest(browser.mode, shimPath, extensions), null, 2) + '\n', 0o600);
   }
-  return JSON.stringify(manifest, null, 2) + '\n';
-}
-
-function createHostManifest(sourceName) {
-  const browser = browsers[sourceName];
-  secureDir(browser.hostManifestDir);
-  atomicWrite(
-    path.join(browser.hostManifestDir, `${config.name}.json`),
-    makeManifest(sourceName, runPath),
-    0o600
-  );
-}
-
-function createSandboxFrontend(sourceName) {
-  const browser = browsers[sourceName];
-  secureDir(browser.sandboxManifestDir);
-
-  const shimPath = path.join(browser.sandboxManifestDir, `${config.name}-proxy-shim`);
-  copyAtomic(shimSource, shimPath, 0o700);
-  atomicWrite(
-    path.join(browser.sandboxManifestDir, `${config.name}.json`),
-    makeManifest(sourceName, shimPath),
-    0o600
-  );
+  for (const [mode, extensions] of Object.entries(byMode)) {
+    if (extensions.length) {
+      atomicWrite(path.join(paths.hosts[mode], `${config.name}.json`),
+        JSON.stringify(manifest(mode, paths.runPath, extensions), null, 2) + '\n', 0o600);
+    }
+  }
+  return {selected, paths};
 }
 
 function main() {
-  if (!fs.existsSync('/usr/bin/flatpak')) throw new Error('/usr/bin/flatpak was not found');
-  if (!fs.existsSync(shimSource)) throw new Error('Included Native Messaging proxy shim is missing');
-
-  const installed = installedFlatpaks();
-  for (const browser of Object.values(browsers)) {
-    if (!installed.has(browser.appId)) throw new Error(`Required Flatpak is not installed: ${browser.appId}`);
+  if (process.platform !== 'linux' || process.arch !== 'x64') {
+    throw new Error('The included proxy shim requires x86-64 Linux');
   }
+  const settings = options(process.argv.slice(2), process.env.HOME);
+  const {selected, paths} = install(settings, installedFlatpaks());
+  console.log(`Hardened host installed in:\n  ${paths.appDir}`);
+  console.log('Sandbox frontends installed for:');
+  for (const name of selected) console.log(`  ${name}: ${paths.frontends[name]}`);
+  console.log('Other browsers were skipped. Re-run install.sh after adding a supported browser.');
 
-  createApplication();
-  createHostManifest('chrome');
-  createHostManifest('firefox');
-  createSandboxFrontend('chrome');
-  createSandboxFrontend('firefox');
-
-  console.log(`\nHardened host installed in:\n  ${appDir}`);
-  console.log('\nHost-side manifests for xdg-native-messaging-proxy:');
-  console.log(`  ${path.join(browsers.chrome.hostManifestDir, `${config.name}.json`)}`);
-  console.log(`  ${path.join(browsers.firefox.hostManifestDir, `${config.name}.json`)}`);
-  console.log('\nSandbox frontends installed for:');
-  console.log(`  ${browsers.chrome.appId}`);
-  console.log(`  ${browsers.firefox.appId}`);
-
-  if (!proxyInstalled()) {
-    console.log('\nWARNING: org.freedesktop.NativeMessagingProxy D-Bus activation was not found.');
-    console.log('Install Fedora\'s xdg-native-messaging-proxy package before using the extensions.');
+  if (!['/usr/share', '/usr/local/share'].some(dir =>
+    fs.existsSync(path.join(dir, 'dbus-1/services/org.freedesktop.NativeMessagingProxy.service')))) {
+    console.log('\nWARNING: NativeMessagingProxy D-Bus activation was not found.');
+    console.log('Install xdg-native-messaging-proxy before using the extensions.');
   }
-
-  const missing = Object.values(browsers)
-    .filter(browser => !hasTalkPermission(browser.appId, config.proxy.busName))
-    .map(browser => browser.appId);
-
+  const missing = selected.filter(name => !hasTalkPermission(config.browsers[name].appId, config.proxy.busName));
   if (missing.length) {
-    console.log('\nREQUIRED: the browser Flatpaks need narrowly scoped access to:');
-    console.log(`  ${config.proxy.busName}`);
-    console.log('The installer deliberately did NOT change Flatpak permissions. Grant it with:');
-    for (const appId of missing) {
-      console.log(`  flatpak override --user --talk-name=${config.proxy.busName} ${appId}`);
+    console.log('\nThe installer did NOT change Flatpak permissions. Grant proxy access with:');
+    for (const name of missing) {
+      console.log(`  flatpak override --user --talk-name=${config.proxy.busName} ${config.browsers[name].appId}`);
     }
-    console.log('Then fully quit and restart both browsers.');
+    console.log('Then fully quit and restart the affected browsers.');
   }
-
-  const broad = Object.values(browsers).filter(browser => hasBroadFlatpakPermission(browser.appId));
+  const broad = selected.filter(name => hasTalkPermission(config.browsers[name].appId, 'org.freedesktop.Flatpak'));
   if (broad.length) {
-    console.log('\nSECURITY WARNING: these browsers still have org.freedesktop.Flatpak talk access:');
-    for (const browser of broad) console.log(`  ${browser.appId}`);
-    console.log('That broad permission is NOT needed by this proxy-based implementation.');
-    console.log('Review your user overrides and remove it if it was granted only for the old bridge.');
+    console.log(`\nWARNING: unnecessary org.freedesktop.Flatpak talk access: ${broad.join(', ')}`);
+    console.log('Review your overrides; that permission is not needed by this implementation.');
   }
-
-  console.log('\nExtension settings: leave custom executable path and custom arguments empty/default.');
-  console.log('Only http:// and https:// URLs are accepted by the hardened host.');
+  console.log('\nInstall the matching Open-in extensions from the stores in the README matrix.');
+  console.log('Leave custom paths/arguments empty; destination Flatpaks must be installed.');
 }
 
-try { main(); }
-catch (err) {
-  console.error(`Installation failed: ${err.message}`);
-  process.exit(1);
+if (require.main === module) {
+  try { main(); }
+  catch (err) { console.error(`Installation failed: ${err.message}`); process.exitCode = 1; }
 }
+module.exports = {install};

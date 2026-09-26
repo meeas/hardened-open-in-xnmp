@@ -1,112 +1,145 @@
 # Hardened Open-in XDG Native Messaging Bridge
-=================================================
 
-Purpose
--------
-This package is intentionally limited to exactly this configuration:
+Open HTTP/HTTPS links between supported Linux Flatpak browsers using the existing
+[Open-in extension family](https://webextension.org/listing/open-in.html).
+The extensions are not modified. Each approved extension can launch only its
+named destination browser.
 
-  Google Chrome Flatpak + "Open in Firefox" -> Firefox Flatpak
-  Firefox Flatpak       + "Open in Chrome"  -> Google Chrome Flatpak
+## Supported directions
 
-The browser extensions themselves are not modified.
+Read **across a row**: install “Open in [column browser]” in the source browser.
+Letters identify the extension store: **C** = Chrome Web Store, **F** = Firefox
+Add-ons, **E** = Edge Add-ons, **O** = Opera Add-ons. **—** = not offered by this
+bridge (including same-browser transfers).
 
-Architecture
-------------
-The sandboxed browser launches a tiny com.add0n.node proxy shim using the normal
-Native Messaging API. The shim calls:
+| From ↓ / To → | Chrome | Firefox | Edge | Brave | Chromium | Opera | Vivaldi |
+|---|---|---|---|---|---|---|---|
+| Chrome | — | C | C | C | C | C | — |
+| Firefox | F | — | F | F | F | F | F |
+| Edge | E | E/C | — | C | C | E/C | — |
+| Brave | — | C | C | — | C | C | — |
+| Chromium | — | C | C | C | — | C | — |
+| Opera | O | O/C | O/C | C | O/C | — | O |
+| Vivaldi | — | C | C | C | C | C | — |
 
-  org.freedesktop.NativeMessagingProxy.Start()
+Use the family catalog above to choose the exact extension; similarly named
+extensions from other developers are not authorized. Both browsers must be
+installed as the Flatpak applications listed in [app/config.js](app/config.js).
+A store entry is required for the indicated source browser; the installer does
+not install extensions or enable other extension stores for you.
 
-on the user session D-Bus and relays the returned stdin/stdout/stderr Unix file
-descriptors. xdg-native-messaging-proxy then launches the real hardened
-com.add0n.node host outside the browser sandbox.
+In particular, **Brave → Chrome is not included**: there is no Chrome Web Store
+edition of this family's Open in Chrome in the verified catalog. Chrome is
+reachable from Firefox, Edge and Opera. Vivaldi is reachable from Firefox and
+Opera. Unpacked extensions, repackaging and custom executable substitutions are
+outside this support matrix.
 
-Requirements
-------------
-* Linux x86-64
-* Node.js 18+ already installed on the host
-* Google Chrome Flatpak: com.google.Chrome
-* Firefox Flatpak: org.mozilla.firefox
-* xdg-native-messaging-proxy installed on the host
+The matrix describes implemented routes and store availability, **not a completed
+live-browser certification**. Automated tests cover routing, manifests and the
+compiled caller allowlist; real browser/proxy round trips remain to be checked.
+Store versions and evidence are recorded in [docs/COMPATIBILITY.md](docs/COMPATIBILITY.md).
+Yandex, Waterfox, Tor, Pale Moon, Safari and Internet Explorer are not included.
 
-Fedora/Aurora package name:
+## Install
 
-  xdg-native-messaging-proxy
+Requirements: x86-64 Linux, host Node.js 18+, `/usr/bin/flatpak`, at least one
+supported browser Flatpak, and host `xdg-native-messaging-proxy`. The included
+helper needs GLIBC 2.34+ and GLib/GIO libraries inside the browser runtime.
 
-Install
--------
+```sh
+./install.sh
+```
 
-  ./install.sh
+The installer detects supported browsers and installs their frontends. It no
+longer requires Chrome and Firefox together. Re-run it after adding another
+supported browser. Install the destination Flatpak before sending links to it.
 
-The installer does NOT grant Flatpak D-Bus permissions automatically. If the
-browser packages do not already have the permission, grant only:
+If a browser lacks proxy D-Bus permission, the installer prints the exact command
+needed, for example:
 
-  flatpak override --user --talk-name=org.freedesktop.NativeMessagingProxy com.google.Chrome
-  flatpak override --user --talk-name=org.freedesktop.NativeMessagingProxy org.mozilla.firefox
+```sh
+flatpak override --user --talk-name=org.freedesktop.NativeMessagingProxy com.microsoft.Edge
+```
 
-Then fully quit and restart both browsers.
+Permissions are **not changed automatically**. Fully quit and restart affected
+browsers after changing them. Install the appropriate extensions from the matrix
+and leave their executable paths and custom command arguments empty/default.
+Do not install the generic upstream native client over this hardened host.
 
-Installed files
----------------
-Real hardened host:
+To put the host application elsewhere:
 
-  ~/.config/com.add0n.node/
+```sh
+./install.sh --custom-dir="$HOME/.local/share"
+```
 
-Host-side manifests discovered by xdg-native-messaging-proxy:
+Use that same option when uninstalling. The option moves only the host application;
+browser manifests remain in their standard locations. Run these scripts as your
+normal desktop user, without sudo.
 
-  ~/.config/google-chrome/NativeMessagingHosts/com.add0n.node.json
-  ~/.mozilla/native-messaging-hosts/com.add0n.node.json
+## How it works
 
-Chrome Flatpak frontend:
+```text
+Browser extension → sandbox C helper → NativeMessagingProxy over D-Bus
+                  → host run.sh → Node.js validation → fixed Flatpak browser
+```
 
-  ~/.var/app/com.google.Chrome/config/google-chrome/NativeMessagingHosts/
-    com.add0n.node.json
-    com.add0n.node-proxy-shim
+The helper relays Native Messaging bytes without interpreting JSON. The Node.js
+host validates the caller identity and request, then invokes `/usr/bin/flatpak`
+with an argument array, no shell, and a reduced environment. Its response confirms
+that the Flatpak process started; it does not prove the browser opened the page.
 
-Firefox Flatpak frontend:
+Installed locations:
 
-  ~/.var/app/org.mozilla.firefox/.mozilla/native-messaging-hosts/
-    com.add0n.node.json
-    com.add0n.node-proxy-shim
+- Host application: `~/.config/com.add0n.node/` by default.
+- Proxy manifests: `~/.config/google-chrome/NativeMessagingHosts/` for Chromium
+  sources and `~/.mozilla/native-messaging-hosts/` for Firefox. The Chrome-named
+  directory is needed by the proxy even for an Edge-only installation.
+- Sandbox frontends: `~/.var/app/<application-id>/` under each browser's configured
+  Native Messaging directory. The installer prints these paths.
 
-Security restrictions
----------------------
-* Only the two intended extension identities are present in manifests.
-* The sandbox shim verifies the browser-provided extension identity.
-* The real host independently verifies the identity reconstructed by
-  xdg-native-messaging-proxy.
-* Only upstream Linux cmd=exec requests are accepted.
-* The extension-provided command is checked but is never executed.
-* Chrome can launch only org.mozilla.firefox.
-* Firefox can launch only com.google.Chrome.
-* Only absolute http:// and https:// URLs are accepted.
-* Browser flags, file:, data:, javascript:, arbitrary process options,
-  environment injection, stdin injection, arbitrary spawn/exec, VM scripts,
-  and module loading are rejected.
-* The real host invokes /usr/bin/flatpak with shell=false and a reduced
-  environment.
+The installer replaces this host's existing files/manifests. It does not modify
+other native host names. Uninstall removes this host rather than restoring any
+previous generic `com.add0n.node` installation.
 
-Important residual trust boundary
----------------------------------
-Granting a browser Flatpak talk access to org.freedesktop.NativeMessagingProxy
-allows processes in that browser sandbox to ask the host-side proxy about
-native messaging hosts visible to the proxy. xdg-native-messaging-proxy itself
-warns that Native Messaging can expose sandbox-escaping capabilities depending
-on what other native hosts are installed.
+## Security and limits
 
-The com.add0n.node host in this package is deliberately constrained, but the
-D-Bus permission is browser-wide, not host-name-specific. Avoid installing
-untrusted native messaging hosts and periodically review host manifests.
+Only exact, allowlisted extension identities and their fixed destination mappings
+are accepted. Requests must use `cmd: "exec"`, the expected default command name,
+and 1–256 absolute HTTP/HTTPS URL arguments. The command name is checked but never
+executed. Arbitrary process options, flags, other URI schemes, custom paths and
+unknown request fields are rejected. Requests are limited to 1 MiB and individual
+URLs to 16,384 UTF-16 code units.
 
-Extension settings
-------------------
-Leave custom executable paths and custom command-line arguments empty/default
-in both Open-in extensions. This hardened host intentionally rejects them.
+The extension's optional native-client diagnostic/version and executable-finder
+features are not implemented; test normal link opening instead. Compared with the
+original bridge, unexpected fields, whitespace/control characters in URLs and
+incomplete/invalid UTF-8 messages are now explicitly rejected.
 
-Uninstall
----------
+Proxy D-Bus permission applies to the whole browser sandbox and is not restricted
+to this host name. Other native hosts visible to the proxy remain a separate trust
+boundary. Caller arguments are allowlist checks, not proof of the originating
+process. See [SECURITY-NOTES.md](SECURITY-NOTES.md) for the security contract.
 
-  ./uninstall.sh
+## Uninstall
 
-The uninstaller removes this package's files but does not alter Flatpak user
-overrides.
+```sh
+./uninstall.sh
+```
+
+Node.js is required for uninstall as well as install. This removes known frontends
+for all seven browsers, including browsers removed since installation. Flatpak
+permission overrides are left unchanged; review them separately if the bridge was
+their only purpose.
+
+## Development
+
+```sh
+node --test tests/*.test.js
+node scripts/generate-shim-allowlist.js --check
+sha256sum --check SHA256SUMS
+```
+
+Tests mock browser launches and install only into temporary directories. The
+compiled helper is checked using an intentionally nonexistent session bus.
+See [BUILD-SHIM.txt](BUILD-SHIM.txt) for rebuilding, [docs/STATUS.md](docs/STATUS.md)
+for validation gaps, and [docs/DECISIONS.md](docs/DECISIONS.md) for design decisions.

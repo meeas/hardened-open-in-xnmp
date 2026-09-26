@@ -10,11 +10,18 @@ The design should remain small, auditable, and narrowly scoped.
 
 ## Primary Components
 
-The host-side implementation consists approximately of:
+The host-side implementation consists of:
 
-- `run.sh`
-- `host.js`
-- `messaging.js`
+- generated `run.sh`;
+- `app/host.js`;
+- `app/messaging.js`;
+- `app/config.js`, the trusted browser/extension registry.
+
+`app/native-messaging-proxy-shim.c` runs inside each source browser sandbox.
+Its compiled identity allowlist is generated from the registry; rebuild it when
+identities change. Installation and removal share `app/installation.js` paths.
+See [README.md](README.md) for the supported source/destination matrix and
+[docs/DECISIONS.md](docs/DECISIONS.md) for the accepted design.
 
 Responsibilities should remain separated where practical:
 
@@ -107,24 +114,18 @@ Malformed URLs should fail closed.
 
 Destination browsers must come from a fixed internal allowlist.
 
-Current intended browser mappings include:
+The fixed destination browsers are Chrome, Firefox, Edge, Brave, Chromium,
+Opera and Vivaldi. Exact Flatpak IDs and default Linux command strings live in
+[app/config.js](app/config.js); do not duplicate this registry in request logic.
+Yandex, Waterfox, Tor, Pale Moon, Safari and Internet Explorer remain out of scope.
 
-- Firefox Flatpak: `org.mozilla.firefox`
-- Google Chrome Flatpak: `com.google.Chrome`
+The host maps an approved extension identity to one destination. For example,
+Open in Edge can launch only the fixed Edge Flatpak, regardless of whether the
+extension runs inside Chrome, Brave or Firefox. The request's command is checked
+against that destination's default command but never used as an executable.
 
-The extension must not be permitted to provide an arbitrary Flatpak application ID.
-
-The host should translate a small logical browser identifier into a predetermined application/command internally.
-
-For example:
-
-`chrome`
-
-may internally resolve to:
-
-`/usr/bin/flatpak run com.google.Chrome <validated URL>`
-
-The executable path and application ID should originate from trusted application configuration/code, not from the Native Messaging request.
+Requests cannot supply a target Flatpak ID or switch the authorized destination.
+Launching uses `/usr/bin/flatpak run <fixed-application-id> <validated-URLs>`.
 
 ## Process Execution
 
@@ -185,7 +186,12 @@ The implementation should defensively handle:
 - unknown operations;
 - unexpected properties where strict validation is appropriate.
 
-Define a conservative maximum message size.
+The implementation limits messages to 1 MiB, at most 256 URLs and 16,384 UTF-16
+code units per URL. Only `cmd`, `command`, `arguments` and optional empty
+`properties` are accepted. All other fields and operations fail closed. URLs must
+begin with `http://` or `https://`, parse successfully, and contain no raw ASCII
+whitespace or control characters. Invalid UTF-8, non-object JSON and incomplete
+frames at EOF terminate the stream with a generic stderr diagnostic.
 
 Do not allocate arbitrarily large buffers based solely on a client-provided length prefix.
 
@@ -195,19 +201,18 @@ Malformed requests should fail closed without causing the host to execute anythi
 
 Native Messaging manifests should restrict access to the intended browser extensions.
 
-Known extension identities include:
+Only the identities in [app/config.js](app/config.js) are permitted. They cover
+19 published Chrome, Firefox, Edge and Opera store editions of the seven approved
+browser targets; see [docs/COMPATIBILITY.md](docs/COMPATIBILITY.md) for provenance.
+Each frontend manifest lists the source browser's relevant store identities and
+excludes same-browser targets. The host-side proxy manifests contain the union
+needed by installed sources, separated into Chromium and Mozilla protocol modes.
 
-Chrome extension ID:
-
-`lmeddoobegbaiopohmpmmobpnpjifpii`
-
-Firefox extension ID:
-
-`{086f665e-6a55-4107-9147-f9a14e72b137}`
-
-Do not broaden the manifests to arbitrary extensions unless explicitly requested.
-
-Where practical, retain defense in depth so that the host does not depend exclusively upon manifest-level authorization for its security.
+The C helper and Node host independently check exact identities. These checks
+validate caller arguments, not the originating process: a Chromium extension's
+origin does not distinguish Chrome from Brave or Edge. A local process can supply
+these arguments. Security therefore also depends on the narrow URL-opening
+capability and on browser/proxy authorization. No wildcard origins are allowed.
 
 ## Firefox Integration
 
@@ -223,7 +228,8 @@ Firefox
 → this Node.js host
 → destination browser
 
-The host implementation itself should not contain Firefox-specific proxy logic.
+All supported browsers use the sandbox helper and the same proxy service.
+The Node.js host itself should not contain browser-specific proxy logic.
 
 From the host application's perspective, it should remain a normal standards-compliant Native Messaging host.
 
@@ -254,7 +260,11 @@ Examples:
 - Unsupported URL scheme → reject.
 - Malformed JSON → reject.
 - Missing required property → reject.
-- Browser launch failure → report failure without attempting arbitrary alternatives.
+- Failure to spawn `/usr/bin/flatpak` → report failure without arbitrary alternatives.
+
+The current success response acknowledges process creation only. It does not
+observe Flatpak's exit status or confirm that the destination browser opened the
+URL. This retained limitation is recorded in [docs/DECISIONS.md](docs/DECISIONS.md).
 
 Do not silently reinterpret malformed input into something executable.
 
@@ -314,7 +324,11 @@ Tests should cover at least:
 
 Where practical, process-launch tests should mock the execution layer so tests cannot accidentally launch real browsers.
 
-Security-relevant parsing and validation behavior should have explicit regression tests.
+Security-relevant parsing and validation behavior has regression tests in
+[tests/bridge.test.js](tests/bridge.test.js). Run `node --test tests/*.test.js`.
+The suite uses mock launches, a nonexistent D-Bus endpoint for caller checks,
+and temporary installation directories. It is not an end-to-end browser test;
+current evidence and remaining validation are in [docs/STATUS.md](docs/STATUS.md).
 
 ## Overall Design Principle
 

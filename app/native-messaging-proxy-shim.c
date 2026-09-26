@@ -63,8 +63,7 @@ extern void g_error_free(GError *error);
 #define INTERFACE    "org.freedesktop.NativeMessagingProxy"
 #define HOST_NAME    "com.add0n.node"
 
-#define CHROME_ORIGIN "chrome-extension://lmeddoobegbaiopohmpmmobpnpjifpii/"
-#define FIREFOX_ID    "{086f665e-6a55-4107-9147-f9a14e72b137}"
+#include "shim-allowlist.h"
 
 #define BUF_SIZE 65536
 
@@ -94,16 +93,23 @@ static int ends_with(const char *s, const char *suffix) {
     return slen >= xlen && memcmp(s + slen - xlen, suffix, xlen) == 0;
 }
 
+/* Exact registry matches only; origins do not identify a physical browser. */
+static int allowed(const char *value, const char *const *list, size_t count) {
+    for (size_t i = 0; i < count; i++)
+        if (strcmp(value, list[i]) == 0) return 1;
+    return 0;
+}
+
 static int determine_caller(int argc, char **argv, const char **mode, const char **extension_or_origin) {
     /* Chromium passes exactly the extension origin as argv[1] on Linux. */
-    if (argc == 2 && strcmp(argv[1], CHROME_ORIGIN) == 0) {
+    if (argc == 2 && allowed(argv[1], chromium_callers, sizeof(chromium_callers) / sizeof(chromium_callers[0]))) {
         *mode = "chromium";
         *extension_or_origin = argv[1];
         return 0;
     }
 
     /* Firefox passes manifest path then add-on ID. */
-    if (argc == 3 && strcmp(argv[2], FIREFOX_ID) == 0 &&
+    if (argc == 3 && allowed(argv[2], mozilla_callers, sizeof(mozilla_callers) / sizeof(mozilla_callers[0])) &&
         argv[1][0] == '/' && ends_with(argv[1], "/com.add0n.node.json")) {
         *mode = "mozilla";
         *extension_or_origin = argv[2];
