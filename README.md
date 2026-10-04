@@ -76,6 +76,19 @@ Use that same option when uninstalling. The option moves only the host applicati
 browser manifests remain in their standard locations. Run these scripts as your
 normal desktop user, without sudo.
 
+Check the installation after setup or after adding a browser:
+
+```sh
+./verify.sh
+# If installed with a custom directory:
+./verify.sh --custom-dir="$HOME/.local/share"
+```
+
+Verification checks every detected supported browser's frontend, the shared host
+files and manifests, proxy activation service, and D-Bus talk permission. It exits
+nonzero and lists issues if anything is missing or differs from this checkout.
+Browser extension installation and actual link opening still need a manual check.
+
 ## How it works
 
 ```text

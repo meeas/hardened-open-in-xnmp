@@ -1,6 +1,6 @@
 # Current status
 
-## Implemented (2026-09-26, uncommitted changes after a27bd75)
+## Implemented (2026-10-04)
 
 - Seven Flatpak browsers: Chrome, Firefox, Edge, Brave, Chromium, Opera, Vivaldi.
 - Nineteen published extension identities mapped to fixed destinations; exact
@@ -8,6 +8,9 @@
 - Generated shim allowlist shares the registry with installer/host configuration.
 - Installer detects supported apps independently, writes per-browser frontends
   and shared proxy manifests; uninstaller uses the same known paths.
+- Read-only `verify.sh` checks detected browsers' installed bridge files,
+  manifests, permissions and proxy activation service; it cannot certify
+  extension installation or a live browser round trip.
 - Strict request-field/URL checks, invalid UTF-8 and JSON-type rejection,
   truncated-frame detection, coordinated stream errors without payload logging.
 - Compact store/direction matrix and installation instructions in [README](../README.md).
@@ -16,6 +19,11 @@
 
 ## Validation and remaining work
 
+- On 2026-10-04, the focused verifier test passed for two browsers, including
+  damaged manifest, missing shim and missing permission reports. Shell syntax,
+  JavaScript syntax and Git whitespace checks passed. The existing suite reached
+  30 passing checks but two child-process checks failed with `EPERM` in this
+  sandbox; rerun the full suite where process execution is permitted.
 - Thirty-two regression tests passed on Node.js 26.8.2: all extension capabilities,
   mismatched targets, malformed inputs, fragmented/multiple frames, mock launches
   and spawn errors, compiled shim allowlist, isolated per-browser installation,
