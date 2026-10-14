@@ -13,7 +13,7 @@ Add-ons, **E** = Edge Add-ons, **O** = Opera Add-ons. **—** = not offered by t
 bridge (including same-browser transfers).
 
 | From ↓ / To → | Chrome | Firefox | Edge | Brave | Chromium | Opera | Vivaldi |
-|---|---|---|---|---|---|---|---|
+| --- | --- | --- | --- | --- | --- | --- | --- |
 | Chrome | — | C | C | C | C | C | — |
 | Firefox | F | — | F | F | F | F | F |
 | Edge | E | E/C | — | C | C | E/C | — |

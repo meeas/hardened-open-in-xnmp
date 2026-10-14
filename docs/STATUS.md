@@ -1,5 +1,23 @@
 # Current status
 
+## Current validation (2026-10-14)
+
+- Validated the working tree based on `36277ba`, including the Node executable
+  override and README table spacing correction. No runtime changes were needed.
+- All 34 regression tests passed on Node.js 26.11.0 with test isolation disabled
+  outside the sandbox. The sandbox run passed 32 and blocked two child-process
+  checks with `EPERM`; the unrestricted run resolved both failures.
+- All JavaScript and shell syntax checks, generated-header consistency, 26 local
+  documentation links, and Git whitespace checks passed.
+- C source compiled to a temporary artifact with `-Wall -Wextra -Werror`.
+  The shipped binary passed its loader self-test and retains x86-64 PIE, RELRO,
+  immediate binding, a non-executable stack, and GLIBC 2.34 minimum.
+- Refreshed the complete `SHA256SUMS` manifest after validation; all 24 entries
+  passed verification. The stale installer/test hashes came from the recent
+  Node-path commit. The shipped binary was not replaced.
+- Remaining validation: minimum Node.js 18, real browser/proxy round trips,
+  current store availability, and remote CI/release checks described below.
+
 ## Implemented (2026-10-04)
 
 - Seven Flatpak browsers: Chrome, Firefox, Edge, Brave, Chromium, Opera, Vivaldi.
@@ -19,16 +37,6 @@
 
 ## Validation and remaining work
 
-- On 2026-10-04, the focused verifier test passed for two browsers, including
-  damaged manifest, missing shim and missing permission reports. Shell syntax,
-  JavaScript syntax and Git whitespace checks passed. The existing suite reached
-  30 passing checks but two child-process checks failed with `EPERM` in this
-  sandbox; rerun the full suite where process execution is permitted.
-- Thirty-two regression tests passed on Node.js 26.8.2: all extension capabilities,
-  mismatched targets, malformed inputs, fragmented/multiple frames, mock launches
-  and spawn errors, compiled shim allowlist, isolated per-browser installation,
-  union manifests, custom paths, idempotent removal preserving unrelated hosts,
-  README matrix consistency and clean CLI protocol-error handling.
 - Tests use temporary directories and a deliberately invalid D-Bus endpoint;
   no real browsers were launched and no desktop installation was changed.
 - C build passed with -Wall -Wextra -Werror. Rebuilt x86-64 artifact retains
