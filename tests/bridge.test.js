@@ -215,6 +215,21 @@ test('all-browser broker manifests authorize the union of source manifests', () 
   finally { fs.rmSync(home, {recursive: true, force: true}); }
 });
 
+test('installer preserves an explicit Node executable path in run.sh', () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'xnmp-test-'));
+  try {
+    const nodePath = path.join(home, 'node');
+    fs.symlinkSync(process.execPath, nodePath);
+    const settings = options([], home);
+    const {paths} = install(settings, new Set([config.browsers.chrome.appId]), nodePath);
+    const run = fs.readFileSync(paths.runPath, 'utf8');
+    assert.ok(run.includes(`exec '${nodePath}' `));
+    assert.ok(fs.existsSync(nodePath));
+    uninstall(settings);
+  }
+  finally { fs.rmSync(home, {recursive: true, force: true}); }
+});
+
 test('no browsers and invalid installer options fail before writing', () => {
   const home = fs.mkdtempSync(path.join(os.tmpdir(), 'xnmp-test-'));
   try {

@@ -76,6 +76,16 @@ Use that same option when uninstalling. The option moves only the host applicati
 browser manifests remain in their standard locations. Run these scripts as your
 normal desktop user, without sudo.
 
+By default, `run.sh` uses the Node.js executable found on `PATH` during
+installation. To embed a different absolute executable path, such as Homebrew's
+upgrade-stable link, use `--node-path`:
+
+```sh
+./install.sh --node-path=/home/linuxbrew/.linuxbrew/bin/node
+```
+
+This option can be combined with `--custom-dir`.
+
 Check the installation after setup or after adding a browser:
 
 ```sh

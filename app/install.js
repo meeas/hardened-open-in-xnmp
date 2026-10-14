@@ -58,16 +58,19 @@ function hasTalkPermission(appId, busName) {
  * it is injectable so installation can be tested in a temporary home directory.
  * Returns the installed browser names and paths. Throws if no supported app exists.
  */
-function install(settings, installed) {
+function install(settings, installed, nodeExecutable = process.execPath) {
   const selected = Object.keys(config.browsers).filter(name => installed.has(config.browsers[name].appId));
   if (!selected.length) throw new Error('No supported browser Flatpaks are installed');
+  if (!path.isAbsolute(nodeExecutable)) throw new Error('Node.js path must be absolute');
+  try { fs.accessSync(nodeExecutable, fs.constants.X_OK); }
+  catch { throw new Error(`Node.js path is not executable: ${nodeExecutable}`); }
   const paths = layout(settings);
   const shim = fs.readFileSync(path.join(__dirname, 'native-messaging-proxy-shim'));
   secureDir(paths.appDir);
   for (const name of ['host.js', 'messaging.js', 'config.js']) {
     atomicWrite(path.join(paths.appDir, name), fs.readFileSync(path.join(__dirname, name)), 0o600);
   }
-  const run = `#!/bin/sh\nset -eu\nexec ${shellQuote(process.execPath)} "$(dirname -- "$0")/host.js" "$@"\n`;
+  const run = `#!/bin/sh\nset -eu\nexec ${shellQuote(nodeExecutable)} "$(dirname -- "$0")/host.js" "$@"\n`;
   atomicWrite(paths.runPath, run, 0o700);
 
   const byMode = {chromium: [], mozilla: []};
@@ -94,8 +97,12 @@ function main() {
   if (process.platform !== 'linux' || process.arch !== 'x64') {
     throw new Error('The included proxy shim requires x86-64 Linux');
   }
-  const settings = options(process.argv.slice(2), process.env.HOME);
-  const {selected, paths} = install(settings, installedFlatpaks());
+  const args = process.argv.slice(2);
+  const nodePathArgs = args.filter(arg => arg.startsWith('--node-path='));
+  if (nodePathArgs.length > 1) throw new Error('Specify --node-path at most once');
+  const nodeExecutable = nodePathArgs.length ? nodePathArgs[0].slice('--node-path='.length) : process.execPath;
+  const settings = options(args.filter(arg => !arg.startsWith('--node-path=')), process.env.HOME);
+  const {selected, paths} = install(settings, installedFlatpaks(), nodeExecutable);
   console.log(`Hardened host installed in:\n  ${paths.appDir}`);
   console.log('Sandbox frontends installed for:');
   for (const name of selected) console.log(`  ${name}: ${paths.frontends[name]}`);
