@@ -36,7 +36,9 @@ outside this support matrix.
 
 The matrix describes implemented routes and store availability, **not a completed
 live-browser certification**. Automated tests cover routing, manifests and the
-compiled caller allowlist; real browser/proxy round trips remain to be checked.
+compiled caller allowlist. Chrome, Edge, and Firefox integrations are user-verified;
+Brave, Chromium, Opera, and Vivaldi still need live validation. See
+[docs/STATUS.md](docs/STATUS.md) for the recorded evidence and coverage limits.
 Store versions and evidence are recorded in [docs/COMPATIBILITY.md](docs/COMPATIBILITY.md).
 Yandex, Waterfox, Tor, Pale Moon, Safari and Internet Explorer are not included.
 

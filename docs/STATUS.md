@@ -15,7 +15,10 @@
 - Refreshed the complete `SHA256SUMS` manifest after validation; all 24 entries
   passed verification. The stale installer/test hashes came from the recent
   Node-path commit. The shipped binary was not replaced.
-- Remaining validation: minimum Node.js 18, real browser/proxy round trips,
+- User reports Chrome, Edge, and Firefox integrations verified (2026-10-14).
+  Browser/extension versions, exact routes/store editions, and scenario coverage
+  were not recorded; this is user-reported evidence, separate from automated tests.
+- Remaining validation: minimum Node.js 18, remaining browser/proxy round trips,
   current store availability, and remote CI/release checks described below.
 
 ## Implemented (2026-10-04)
@@ -43,10 +46,11 @@
   GLIBC 2.34 minimum, PIE, RELRO, immediate binding and non-executable stack.
 - Shell syntax, local documentation links, generated-header consistency and
   Git whitespace checks passed. SHA256SUMS was refreshed for the full file set.
-- Full browser→shim→real proxy→destination integration remains unverified for
-  every new route. Validate in disposable desktop sessions per
+- Brave, Chromium, Opera, and Vivaldi integrations still need live validation.
+  Validate in disposable desktop sessions per
   [RELEASE_CHECKLIST.md](../RELEASE_CHECKLIST.md), particularly Opera-store legacy
-  extensions, Edge store packages and each browser's native-host discovery.
+  extensions and each remaining browser's native-host discovery. Record exact
+  routes, store editions, versions, and scenario coverage for future results.
 - Minimum Node.js 18 execution has not yet been checked. No remote CI or release
   publication has been performed.
 - Process-start acknowledgment still does not report later Flatpak/browser errors.
